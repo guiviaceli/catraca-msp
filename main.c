@@ -1,79 +1,141 @@
 #include <msp430.h>
-#include <stdio.h>
 
-#define redLED BIT0
-#define greenLED BIT6
-#define tx BIT2
-#define rx BIT1
+unsigned long i = 0;
+unsigned char rx_index = 0;
 
-unsigned int counter;
-const char string[] = {"Hello World!\r\n"};
-
-//configure UART module
-void configureUART(void)
-{
-    UCA0CTL1 |= UCSSEL_2; // SMCLK
-    UCA0BR0 = 104; // 1MHz 9600
-    UCA0BR1 = 0x00; // 1MHz 9600
-    UCA0MCTL = UCBRS0; // Modulation UCBRSx = 1
-    UCA0CTL1 &= ~UCSWRST; // Initialize USCI state machine
-    IE2 |= UCA0RXIE; // Enable USCI_A0 RX interrupt
-}
-
-//configure ports
-void configurePorts(void)
-{
-   P2DIR = 0xFF;
-   P2OUT = 0x00;
-   P1DIR |= redLED + greenLED;
-   P1OUT = 0x00;
-   P1SEL = rx + tx;
-   P1SEL2 = rx + tx;
-}
-
-void iniTimer(void){
-    WDTCTL = WDTPW + WDTHOLD; // Stop watchdog timer
-    DCOCTL = CALDCO_1MHZ; // Set DCO to 1MHz
-    BCSCTL1 = CALBC1_1MHZ; // Set DCO to 1MHz
-}
+unsigned char RX_data [32];
 
 /*
-void configureTimer(void)
-{
-    TA0CTL = TASSEL_2 + MC0; // SMCLK, upmode
-    TA0CCR0 = 1000; // 1ms
-    TA0CCTL0 = CCIE; // CCR0 interrupt enabled
-}
+This section controls the NFC reader for the project.
+Components: MSP430g2553, ID20-LA, Buzzer, yellow led, resistors and jumpers.
+ID20-LA must be connected as following: pin 1 - gnd, pin 2, pin 3, pin 4 and pin 5 - disconnected, pin 6 - series with the yellow led, going to gnd, pin 7 - gnd, pin 8 - P1.1, pin 9 and pin 10 - disconnected, pin 11 - Vcc.
+The following code will be connected to the keyboard reader and the 7 segments dysplay ones.
+The buzzer is connected to P1.0, a resistor and gnd
 */
 
-pragma vector = USIAB0RX_VECTOR
-__interrupt void USCI0RX_ISR(void)
+void configurePorts(void)
 {
-    P1OUT |= redLED;
-    if (UCA0RXBUF == 'H')
-    {
-        counter = 0;
-        UC0IE |= UCA0TXIE;
-        UCA0TXBUF = string[counter++];
+    // Configure P1 as output in low level 
+    P1DIR = 0xFF;
+    P1OUT = 0x00;
+
+     // Configure P2 as output in low level 
+    P2DIR = 0xFF;
+    P2OUT = 0x00;
+}
+
+// The buzzer bips shortly twice 
+void allowed(void)
+{
+    // Turns on the buzzer and wait for a while
+    P1OUT |= BIT0;
+    for(i=0;i<100000;i++);
+    // Turns off the buzzer and wait for a while
+    P1OUT &=~ BIT0;
+    for(i=0;i<100000;i++);
+    // Turns on the buzzer and wait for a while
+    P1OUT |= BIT0;
+    for(i=0;i<100000;i++);
+    P1OUT &= ~BIT0;
+    // Turns off the buzzer and wait for a while
+    //! This loop is probably unnecessary
+    for(i=0;i<1000000;i++);
+}
+
+// The buzzer bips once for longer
+void denied(void)
+{
+    // Turns on the buzzer and wait for a while
+    P1OUT |= BIT0;
+    for(i=0;i<1000000;i++);
+    // Turns off the buzzer
+    P1OUT &=~ BIT0;
+}
+
+void ini_u_con(void){
+    /*
+    MCLK: 16 MHz
+    SMCLK: 8 MHz
+    ACLK: 32768 Hz
+    LFXT1: 32k crystal
+    DC0: 16 MHz
+    */
+    WDTCTL = WDTPW + WDTHOLD;
+    DCOCTL = CALDCO_16MHZ;
+    BCSCTL1 = CALBC1_16MHZ;
+    BCSCTL2 = DIVS0;
+    BCSCTL3 = XCAP0 + XCAP1;
+
+    // waits for the capacitor to be charged
+    while(BCSCTL3 & LFXT1OF);
+    __enable_interrupt();
+}
+
+void configureUART(void)
+{
+    /*
+    9600 bps
+    8 bits of data
+    SMCLK 8MHz
+    */
+
+    // Enable software reset
+    UCA0CTL1 |= UCSWRST;
+    UCA0CTL0 = 0;
+    // Selects the SMCLK as clock source
+    UCA0CTL1 |= UCSSEL1 + UCSWRST;
+    // Frequency: 8,000,000, Baud rate: 9600 -> 833 -> 341
+    UCA0BR0 = 0x41;
+    UCA0BR1 = 0x03;
+    // Second stage modulation
+    UCA0MCTL = UCBRS1;
+    //P1.1 and P1.2 in the rx and tx mode
+    P1SEL = BIT1 + BIT2;
+    P1SEL2 = BIT1 + BIT2;
+    // Disable the software reset
+    UCA0CTL1 &= ~UCSWRST;
+    // Clears the RX flag
+    IFG2 &= ~ UCA0RXIFG;
+    // Enable the RX to generate flags
+    IE2 |= UCA0RXIE;
+}
+
+// RTI de RX
+//TODO make sure this rti works
+#pragma vector=USCIAB0RX_VECTOR
+__interrupt void RTI_da_USCI_A0_RX(void){
+    // Will read the NFC tag, if it's the allowed one, the buzzer will beep shortlt twice, if it's not allowed, the rti will make one long beep
+    //! Not working yet
+    denied();
+//    P1OUT ^= BIT0;   // P1OUT = P1OUT ^ BIT0;
+    RX_data[rx_index] = UCA0RXBUF;
+
+    if(rx_index >= 31){
+        rx_index = 0;
+    }else{
+        rx_index++;
     }
-   P1OUT &= ~redLED;
 }
 
-#pragma vector = USIAB0TX_VECTOR
-__interrupt void USCI0TX_ISR(void)
+/*void ini_timer(void){
+    TA0CTL= TASSEL1 + MC0;
+    TA0CCTL0 = CCIE;
+    TA0CCR0 = 39999;
+}*/
+
+
+void main(void)
 {
-    P1OUT |= greenLED;
-    UCA0TXBUF = string[counter++];
-    if (counter == sizeof(string) -1)
-        UC0IE &= ~UCA0TXIE;
-    P1OUT &= ~greenLED;
-}
-
-void main(void){
-    configureUART();
     configurePorts();
-    iniTimer();
-    configureTimer();
+    ini_u_con();
+    configureUART();
+    //ini_timer();
+    allowed();
 
-    while(1);
+    denied();
+
+    // Loops forever to keep the MSP430G2553 working
+    do{
+        __bis_SR_register(LPM0_bits + GIE);
+    }while(1);
 }
